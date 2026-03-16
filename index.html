@@ -32,6 +32,7 @@
         /**
          * GLOBAL TRADE NAVIGATOR: CUSTOMS & LOGISTICS EDITION
          * Especialista en Comercio Exterior.
+         * GRUPO 6: Emilio Merino & Dorely Oña.
          */
 
         const canvas = document.getElementById('gameCanvas');
@@ -450,7 +451,12 @@
             ctx.textAlign = 'center'; ctx.fillStyle = 'white';
             
             if (gameState === STATES.MENU) {
-                ctx.font = 'bold 50px sans-serif'; ctx.fillText("GLOBAL TRADE NAVIGATOR", WIDTH/2, HEIGHT/2 - 120);
+                // Créditos Grupo 6
+                ctx.font = 'bold 20px sans-serif'; 
+                ctx.fillStyle = '#94a3b8';
+                ctx.fillText("GRUPO 6: Emilio Merino & Dorely Oña", WIDTH/2, HEIGHT/2 - 180);
+
+                ctx.font = 'bold 50px sans-serif'; ctx.fillStyle = 'white'; ctx.fillText("GLOBAL TRADE NAVIGATOR", WIDTH/2, HEIGHT/2 - 120);
                 ctx.font = 'italic 18px sans-serif'; ctx.fillStyle = '#38bdf8'; ctx.fillText("Especialista en Logística Internacional y Aduanas", WIDTH/2, HEIGHT/2 - 80);
                 ctx.fillStyle = 'white'; ctx.font = '15px monospace';
                 ctx.fillText("MANIFIESTO DE OPERACIONES:", WIDTH/2, HEIGHT/2 - 30);
