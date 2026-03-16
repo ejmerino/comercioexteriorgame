@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Trade Navigator - Logística Internacional</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #020617;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        canvas {
+            box-shadow: 0 0 60px rgba(0,0,0,0.9);
+            border: 2px solid #1e293b;
+            background-color: #082f49;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        /**
+         * GLOBAL TRADE NAVIGATOR: CUSTOMS & LOGISTICS EDITION
+         * Especialista en Comercio Exterior.
+         */
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const WIDTH = 1100;
+        const HEIGHT = 750;
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        const STATES = {
+            MENU: 'MENU',
+            PLAYING: 'PLAYING',
+            PAUSED: 'PAUSED',
+            GAMEOVER: 'GAMEOVER',
+            VICTORY: 'VICTORY'
+        };
+
+        let gameState = STATES.MENU;
+        let keys = {};
+        let particles = [];
+        let enemies = [];
+        let powerups = [];
+        let naturalObstacles = [];
+        let radioLogs = [];
+        let screenShake = 0;
+        
+        let timeLeft = 100;
+        let deliveriesDone = 0;
+        const GOAL_DELIVERIES = 5;
+
+        // IA Tuning: Dificultad Equilibrada (Sutilmente más difícil)
+        let enemySpawnTimer = 0;
+        const SPAWN_COOLDOWN = 160; // Menos tiempo entre spawns
+        const MAX_ENEMIES_CAP = 4;  // Un enemigo extra permitido simultáneamente
+
+        let displayHp = 100;
+        let displayProgress = 0;
+
+        // --- Utilidades ---
+
+        function addRadioLog(text) {
+            radioLogs.push({ text: `[COMEX-LOG]: ${text}`, alpha: 1.0, life: 350 });
+            if (radioLogs.length > 4) radioLogs.shift();
+        }
+
+        class Particle {
+            constructor(x, y, color, size, vx, vy, lifeDecay = 0.02) {
+                this.x = x; this.y = y; this.color = color; this.size = size;
+                this.vx = vx; this.vy = vy; this.life = 1.0; this.lifeDecay = lifeDecay;
+            }
+            update() { this.x += this.vx; this.y += this.vy; this.life -= this.lifeDecay; }
+            draw() {
+                ctx.save(); ctx.globalAlpha = this.life; ctx.fillStyle = this.color;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+            }
+        }
+
+        class NaturalObstacle {
+            constructor(type) {
+                this.type = type; 
+                this.x = 250 + Math.random() * (WIDTH - 500);
+                this.y = 150 + Math.random() * (HEIGHT - 300);
+                this.r = type === 'REEF' ? 35 + Math.random() * 20 : 50;
+                this.angle = 0;
+                
+                if (type === 'REEF') {
+                    this.vertices = [];
+                    const points = 10;
+                    for (let i = 0; i < points; i++) {
+                        const a = (i / points) * Math.PI * 2;
+                        const dist = this.r * (0.7 + Math.random() * 0.5);
+                        this.vertices.push({ x: Math.cos(a) * dist, y: Math.sin(a) * dist });
+                    }
+                }
+            }
+            update() {
+                if (this.type === 'WHIRLPOOL') {
+                    this.angle += 0.05;
+                    const dist = Math.hypot(player.x - this.x, player.y - this.y);
+                    if (dist < 150) {
+                        const pullForce = (150 - dist) / 140;
+                        const angToCenter = Math.atan2(this.y - player.y, this.x - player.x);
+                        const turboResist = keys['ShiftLeft'] ? 0.4 : 1.0;
+                        player.vx += Math.cos(angToCenter) * pullForce * 0.25 * turboResist;
+                        player.vy += Math.sin(angToCenter) * pullForce * 0.25 * turboResist;
+                        player.angle += 0.02 * pullForce; 
+                    }
+                }
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                if (this.type === 'REEF') {
+                    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                    ctx.beginPath();
+                    this.vertices.forEach((v, i) => { if (i === 0) ctx.moveTo(v.x+4, v.y+4); else ctx.lineTo(v.x+4, v.y+4); });
+                    ctx.fill();
+                    ctx.fillStyle = '#475569'; ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    this.vertices.forEach((v, i) => { if (i === 0) ctx.moveTo(v.x, v.y); else ctx.lineTo(v.x, v.y); });
+                    ctx.closePath(); ctx.fill(); ctx.stroke();
+                } else {
+                    ctx.rotate(this.angle);
+                    ctx.strokeStyle = 'rgba(125, 211, 252, 0.4)';
+                    ctx.lineWidth = 2;
+                    for(let i=0; i<5; i++) {
+                        ctx.beginPath(); ctx.arc(0, 0, (this.r / 5) * (i+1), 0, Math.PI * 1.5); ctx.stroke();
+                    }
+                }
+                ctx.restore();
+            }
+        }
+
+        // --- El Jugador ---
+
+        const player = {
+            x: 150, y: HEIGHT / 2, vx: 0, vy: 0, angle: 0, angularVelocity: 0,
+            accel: 0.15, friction: 0.96, angularFriction: 0.88, turnPower: 0.008,
+            hp: 100, maxHp: 100, shield: 0, turbo: 100, hasCargo: false, invulnerable: 0,
+            
+            reset() {
+                this.x = 150; this.y = HEIGHT / 2; this.vx = 0; this.vy = 0;
+                this.angle = 0; this.angularVelocity = 0; this.hp = 100;
+                displayHp = 100; this.shield = 0; this.turbo = 100; this.hasCargo = false;
+            },
+
+            update() {
+                if (this.invulnerable > 0) this.invulnerable--;
+
+                if (keys['ArrowUp'] || keys['KeyW']) {
+                    this.vx += Math.cos(this.angle) * this.accel;
+                    this.vy += Math.sin(this.angle) * this.accel;
+                }
+                if (keys['ArrowDown'] || keys['KeyS']) {
+                    this.vx -= Math.cos(this.angle) * this.accel * 0.5;
+                    this.vy -= Math.sin(this.angle) * this.accel * 0.5;
+                }
+                
+                const currentSpeed = Math.hypot(this.vx, this.vy);
+                const turnAbility = Math.min(currentSpeed / 1.2, 1);
+                if (keys['ArrowLeft'] || keys['KeyA']) this.angularVelocity -= this.turnPower * turnAbility;
+                if (keys['ArrowRight'] || keys['KeyD']) this.angularVelocity += this.turnPower * turnAbility;
+
+                let turboMult = 1;
+                if (keys['ShiftLeft'] && this.turbo > 0 && currentSpeed > 0.5) {
+                    turboMult = 1.7; this.turbo -= 0.75;
+                    if (Math.random() > 0.5) createExplosion(this.x, this.y, '#fbbf24', 0.5, 1);
+                } else if (this.turbo < 100) this.turbo += 0.18;
+
+                if (keys['Space']) { this.vx *= 0.91; this.vy *= 0.91; }
+
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.angularVelocity *= this.angularFriction;
+
+                const limitMargin = 45;
+                const safetyZone = 110; 
+
+                if (this.x < safetyZone) this.vx += 0.06; 
+                if (this.x > WIDTH - safetyZone) this.vx -= 0.06;
+                if (this.y < safetyZone) this.vy += 0.06;
+                if (this.y > HEIGHT - safetyZone) this.vy -= 0.06;
+
+                if (this.x < limitMargin || this.x > WIDTH - limitMargin) {
+                    if (Math.abs(this.vx) > 1.5) { this.hp -= 4; screenShake = 6; }
+                    this.vx *= -0.6; this.x = this.x < limitMargin ? limitMargin + 2 : WIDTH - limitMargin - 2;
+                }
+                if (this.y < limitMargin || this.y > HEIGHT - limitMargin) {
+                    if (Math.abs(this.vy) > 1.5) { this.hp -= 4; screenShake = 6; }
+                    this.vy *= -0.6; this.y = this.y < limitMargin ? limitMargin + 2 : HEIGHT - limitMargin - 2;
+                }
+
+                this.x += this.vx; this.y += this.vy; this.angle += this.angularVelocity;
+
+                if (currentSpeed > 0.4) {
+                    const bx = this.x - Math.cos(this.angle) * 22;
+                    const by = this.y - Math.sin(this.angle) * 22;
+                    particles.push(new Particle(bx, by, 'rgba(255,255,255,0.15)', Math.random()*3+1, -this.vx*0.25, -this.vy*0.25, 0.07));
+                }
+                
+                if (displayHp > this.hp) displayHp -= 0.5;
+                if (displayHp < this.hp) displayHp = this.hp;
+                const targetProgress = (deliveriesDone / GOAL_DELIVERIES) * 100;
+                if (displayProgress < targetProgress) displayProgress += 0.5;
+            },
+
+            draw() {
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle);
+                if (this.invulnerable % 4 > 2) ctx.globalAlpha = 0.4;
+                
+                ctx.fillStyle = '#1e293b'; ctx.beginPath();
+                ctx.moveTo(-30, -14); ctx.lineTo(15, -14); ctx.quadraticCurveTo(35, 0, 15, 14); ctx.lineTo(-30, 14);
+                ctx.closePath(); ctx.fill();
+                
+                if (this.hasCargo) {
+                    ctx.fillStyle = '#3b82f6';
+                    ctx.fillRect(-10, -10, 10, 8); 
+                    ctx.fillRect(4, -10, 10, 8); 
+                    ctx.fillRect(-10, 2, 10, 8); 
+                    ctx.fillRect(4, 2, 10, 8); 
+                    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(-10, -10, 10, 8);
+                    ctx.strokeRect(4, -10, 10, 8);
+                    ctx.strokeRect(-10, 2, 10, 8);
+                    ctx.strokeRect(4, 2, 10, 8);
+                }
+                
+                ctx.fillStyle = '#f8fafc'; ctx.fillRect(-22, -6, 12, 12);
+                
+                if (this.shield > 0) {
+                    ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.arc(0, 0, 42, 0, Math.PI * 2); ctx.stroke();
+                }
+                ctx.restore();
+            }
+        };
+
+        // --- Enemigos (Piratas con IA Ajustada) ---
+
+        class Enemy {
+            constructor() {
+                const side = Math.random() > 0.5;
+                this.x = side ? -60 : WIDTH + 60; this.y = Math.random() * HEIGHT;
+                this.angle = side ? 0 : Math.PI; 
+                // Velocidad base ligeramente superior
+                this.speed = 2.1 + (deliveriesDone * 0.2);
+                this.color = '#7f1d1d';
+            }
+            update() {
+                const dx = player.x - this.x; const dy = player.y - this.y; const dist = Math.hypot(dx, dy);
+                // Mayor radio de persecución (400px en lugar de 340px)
+                if (dist < 400) {
+                    const targetAngle = Math.atan2(dy, dx);
+                    let diff = targetAngle - this.angle;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    // Rotación un poco más agresiva
+                    this.angle += diff * 0.028;
+                }
+                this.x += Math.cos(this.angle) * this.speed; this.y += Math.sin(this.angle) * this.speed;
+                if (dist < 40 && player.invulnerable === 0) {
+                    const knockDir = Math.atan2(player.y - this.y, player.x - this.x);
+                    if (player.shield > 0) {
+                        player.shield -= 50; player.vx += Math.cos(knockDir) * 4.5; player.vy += Math.sin(knockDir) * 4.5;
+                        addRadioLog("¡SISTEMA DE DEFENSA IMPACTADO!");
+                    } else {
+                        player.hp -= 18; player.invulnerable = 60; screenShake = 14;
+                        player.vx += Math.cos(knockDir) * 6; player.vy += Math.sin(knockDir) * 6;
+                        createExplosion(this.x, this.y, '#f97316', 1.8, 15);
+                        addRadioLog("¡DAÑO EN EL CASCO! INSPECCIONAR CARGA");
+                    }
+                    this.destroy();
+                }
+                if (this.x < -300 || this.x > WIDTH + 300 || this.y < -300 || this.y > HEIGHT + 300) this.destroy();
+            }
+            destroy() { const idx = enemies.indexOf(this); if (idx > -1) enemies.splice(idx, 1); }
+            draw() {
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle);
+                ctx.fillStyle = this.color; ctx.beginPath();
+                ctx.moveTo(-20, -10); ctx.lineTo(22, 0); ctx.lineTo(-20, 10); ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        const portA = { x: 130, y: HEIGHT / 2, name: 'Terminal de Exportación' };
+        const portB = { x: WIDTH - 130, y: HEIGHT / 2, name: 'Zona Franca Aduanera' };
+
+        class PowerUp {
+            constructor() {
+                this.x = 300 + Math.random() * (WIDTH - 600); this.y = 150 + Math.random() * (HEIGHT - 300);
+                const types = ['HP', 'SHIELD', 'TURBO']; this.type = types[Math.floor(Math.random() * types.length)];
+                this.r = 18;
+            }
+            draw() {
+                ctx.save(); ctx.translate(this.x, this.y); const bounce = Math.sin(Date.now() * 0.005) * 6;
+                let color = this.type === 'HP' ? '#22c55e' : (this.type === 'SHIELD' ? '#06b6d4' : '#fbbf24');
+                ctx.fillStyle = color; ctx.beginPath(); ctx.arc(0, bounce, this.r, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+                ctx.fillStyle = 'white'; ctx.textAlign = 'center'; ctx.font = 'bold 15px sans-serif';
+                const icons = {'HP': '🔧', 'SHIELD': '🛡️', 'TURBO': '⚡'};
+                ctx.fillText(icons[this.type], 0, 6 + bounce); ctx.restore();
+            }
+        }
+
+        // --- Lógica de Juego ---
+
+        function createExplosion(x, y, color, speed, count) {
+            for(let i=0; i<count; i++) {
+                const angle = Math.random() * Math.PI * 2; const v = Math.random() * speed + 0.5;
+                particles.push(new Particle(x, y, color, Math.random()*4+1, Math.cos(angle)*v, Math.sin(angle)*v, 0.04));
+            }
+        }
+
+        function initGame() {
+            player.reset(); enemies = []; powerups = []; particles = []; naturalObstacles = []; radioLogs = [];
+            timeLeft = 120; deliveriesDone = 0; displayProgress = 0; enemySpawnTimer = 0;
+            for(let i=0; i<5; i++) naturalObstacles.push(new NaturalObstacle('REEF'));
+            for(let i=0; i<2; i++) naturalObstacles.push(new NaturalObstacle('WHIRLPOOL'));
+            addRadioLog("DESPACHO INICIADO. RUMBO A AGUAS INTERNACIONALES.");
+            gameState = STATES.PLAYING;
+        }
+
+        function checkCollisions() {
+            if (!player.hasCargo && Math.hypot(player.x - portA.x, player.y - portA.y) < 85) {
+                player.hasCargo = true;
+                addRadioLog("CARGA VERIFICADA. BILL OF LADING EMITIDO.");
+                createExplosion(player.x, player.y, '#3b82f6', 1, 10);
+            }
+            if (player.hasCargo && Math.hypot(player.x - portB.x, player.y - portB.y) < 85) {
+                player.hasCargo = false; deliveriesDone++; timeLeft += 25;
+                addRadioLog(`IMPORTACIÓN ${deliveriesDone}/${GOAL_DELIVERIES} NACIONALIZADA.`);
+                createExplosion(player.x, player.y, '#22c55e', 2, 20);
+                if (deliveriesDone >= GOAL_DELIVERIES) gameState = STATES.VICTORY;
+            }
+            naturalObstacles.forEach(o => {
+                const dist = Math.hypot(player.x - o.x, player.y - o.y);
+                if (o.type === 'REEF' && dist < o.r + 18) {
+                    if (player.invulnerable === 0) {
+                        player.hp -= 12; player.invulnerable = 45;
+                        const ang = Math.atan2(player.y - o.y, player.x - o.x);
+                        player.vx = Math.cos(ang) * 4.5; player.vy = Math.sin(ang) * 4.5;
+                        screenShake = 10; addRadioLog("COLISIÓN: DAÑOS EN CONTENEDORES.");
+                    }
+                }
+            });
+            for(let i = powerups.length - 1; i >= 0; i--) {
+                const p = powerups[i];
+                if (Math.hypot(player.x - p.x, player.y - p.y) < 40) {
+                    if (p.type === 'HP') { player.hp = Math.min(100, player.hp + 25); addRadioLog("REPARACIÓN DE CUADRILLA LOGÍSTICA."); }
+                    if (p.type === 'SHIELD') { player.shield = 100; addRadioLog("COBERTURA DE SEGURO ACTIVA."); }
+                    if (p.type === 'TURBO') { player.turbo = 100; addRadioLog("OPTIMIZACIÓN DE CADENA DE SUMINISTRO."); }
+                    createExplosion(p.x, p.y, 'white', 1, 8); powerups.splice(i, 1);
+                }
+            }
+        }
+
+        function update() {
+            if (gameState === STATES.PLAYING) {
+                player.update(); naturalObstacles.forEach(o => o.update());
+                enemySpawnTimer++;
+                if (enemySpawnTimer > SPAWN_COOLDOWN && enemies.length < MAX_ENEMIES_CAP) {
+                    if (Math.random() < 0.12) { enemies.push(new Enemy()); enemySpawnTimer = 0; addRadioLog("ALERTA: TRÁFICO NO AUTORIZADO."); }
+                }
+                if (Math.random() < 0.003) powerups.push(new PowerUp());
+                enemies.forEach(e => e.update());
+                for(let i = particles.length-1; i>=0; i--) { particles[i].update(); if (particles[i].life <= 0) particles.splice(i, 1); }
+                radioLogs.forEach(log => { log.life--; if (log.life < 50) log.alpha -= 0.02; });
+                radioLogs = radioLogs.filter(log => log.alpha > 0);
+                checkCollisions();
+                timeLeft -= 1/60;
+                if (timeLeft <= 0 || player.hp <= 0) gameState = STATES.GAMEOVER;
+                if (screenShake > 0) screenShake *= 0.88;
+            }
+        }
+
+        function draw() {
+            ctx.save(); if (screenShake > 0.5) ctx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake);
+            ctx.fillStyle = '#082f49'; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+            for(let x=0; x<WIDTH; x+=100) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, HEIGHT); ctx.stroke(); }
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)'; ctx.lineWidth = 2; ctx.setLineDash([10, 15]); ctx.strokeRect(45, 45, WIDTH-90, HEIGHT-90); ctx.setLineDash([]);
+            drawPort(portA, !player.hasCargo); drawPort(portB, player.hasCargo);
+            naturalObstacles.forEach(o => o.draw()); powerups.forEach(p => p.draw());
+            particles.forEach(p => p.draw()); enemies.forEach(e => e.draw()); player.draw();
+            ctx.restore();
+            if (gameState === STATES.PLAYING) { drawHUD(); drawRadio(); } else drawOverlays();
+        }
+
+        function drawPort(p, active) {
+            ctx.save(); ctx.translate(p.x, p.y);
+            ctx.fillStyle = active ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255,255,255,0.02)';
+            ctx.beginPath(); ctx.arc(0, 0, 90, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = active ? '#22c55e' : '#1e293b'; ctx.setLineDash([10, 5]); ctx.lineWidth = 2; ctx.stroke();
+            ctx.setLineDash([]); ctx.fillStyle = '#1e293b'; ctx.fillRect(-18, -45, 36, 90);
+            ctx.fillStyle = '#94a3b8'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(p.name, 0, 110);
+            ctx.restore();
+        }
+
+        function drawRadio() {
+            ctx.textAlign = 'left'; ctx.font = 'bold 12px monospace';
+            radioLogs.forEach((log, i) => {
+                ctx.globalAlpha = log.alpha; ctx.fillStyle = '#38bdf8';
+                ctx.fillText(log.text, 35, HEIGHT - 35 - (radioLogs.length - 1 - i) * 22);
+            });
+            ctx.globalAlpha = 1.0;
+        }
+
+        function drawHUD() {
+            ctx.fillStyle = 'rgba(2, 6, 23, 0.98)'; ctx.fillRect(0, 0, WIDTH, 120);
+            ctx.strokeStyle = '#334155'; ctx.lineWidth = 2; ctx.strokeRect(0, 0, WIDTH, 120);
+            const isTimeLow = timeLeft < 20;
+            ctx.fillStyle = isTimeLow ? '#f43f5e' : '#38bdf8'; ctx.font = 'bold 45px monospace'; ctx.textAlign = 'center';
+            ctx.fillText(`${Math.max(0, Math.ceil(timeLeft))}s`, WIDTH/2, 60);
+            ctx.fillStyle = 'white'; ctx.font = 'bold 11px sans-serif'; ctx.fillText("CRONÓMETRO ADUANERO", WIDTH/2, 85);
+            const progX = 40, progY = 50, progW = 200, progH = 20;
+            ctx.fillStyle = '#1e293b'; ctx.fillRect(progX, progY, progW, progH);
+            ctx.fillStyle = '#38bdf8'; ctx.fillRect(progX, progY, (displayProgress / 100) * progW, progH);
+            ctx.fillStyle = 'white'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+            ctx.fillText(`FLOTILLA: ${deliveriesDone} / ${GOAL_DELIVERIES}`, progX, progY - 10);
+            ctx.fillText(`${Math.round(displayProgress)}% DESPACHADO`, progX, progY + 38);
+            const barX = WIDTH - 260, barY = 50, barW = 220, barH = 24;
+            const isCritical = player.hp < 25; const shakeUI = isCritical ? Math.sin(Date.now()*0.02)*2 : 0;
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(barX + shakeUI, barY, barW, barH);
+            ctx.fillStyle = '#991b1b'; ctx.fillRect(barX + shakeUI + 2, barY + 2, (displayHp / 100) * (barW - 4), barH - 4);
+            const hpColor = isCritical ? '#f43f5e' : (player.hp > 50 ? '#22c55e' : '#eab308');
+            ctx.fillStyle = hpColor; ctx.fillRect(barX + shakeUI + 2, barY + 2, (player.hp / 100) * (barW - 4), barH - 4);
+            ctx.fillStyle = 'white'; ctx.font = 'bold 11px sans-serif'; ctx.fillText("INTEGRIDAD DE CARGA", barX, barY - 10);
+            ctx.fillStyle = '#1e293b'; ctx.fillRect(barX, 100, barW, 6);
+            ctx.fillStyle = '#fbbf24'; ctx.fillRect(barX, 100, (player.turbo / 100) * barW, 6);
+        }
+
+        function drawOverlays() {
+            ctx.fillStyle = 'rgba(2, 6, 23, 0.9)'; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            ctx.textAlign = 'center'; ctx.fillStyle = 'white';
+            
+            if (gameState === STATES.MENU) {
+                ctx.font = 'bold 50px sans-serif'; ctx.fillText("GLOBAL TRADE NAVIGATOR", WIDTH/2, HEIGHT/2 - 120);
+                ctx.font = 'italic 18px sans-serif'; ctx.fillStyle = '#38bdf8'; ctx.fillText("Especialista en Logística Internacional y Aduanas", WIDTH/2, HEIGHT/2 - 80);
+                ctx.fillStyle = 'white'; ctx.font = '15px monospace';
+                ctx.fillText("MANIFIESTO DE OPERACIONES:", WIDTH/2, HEIGHT/2 - 30);
+                ctx.fillText("Navega entre terminales para completar el flete.", WIDTH/2, HEIGHT/2);
+                ctx.fillText("Evita huracanes y piratas de carga.", WIDTH/2, HEIGHT/2 + 30);
+                ctx.fillStyle = '#94a3b8';
+                ctx.fillText("[W/A/S/D] Navegar | [SHIFT] Turbo | [P] Pausa", WIDTH/2, HEIGHT/2 + 70);
+                drawButton("ZARPAR / INICIAR DESPACHO (Enter)", WIDTH/2, HEIGHT/2 + 150);
+            } 
+            else if (gameState === STATES.PAUSED) {
+                ctx.font = 'bold 50px sans-serif'; ctx.fillText("OPERACIÓN EN PAUSA", WIDTH/2, HEIGHT/2 - 150);
+                
+                // Botones del menú de pausa
+                drawButton("CONTINUAR (P)", WIDTH/2, HEIGHT/2 - 30);
+                drawButton("REPETIR EL NIVEL (R)", WIDTH/2, HEIGHT/2 + 50);
+                drawButton("ABANDONAR (Esc)", WIDTH/2, HEIGHT/2 + 130);
+            }
+            else if (gameState === STATES.GAMEOVER) {
+                ctx.fillStyle = '#f43f5e'; ctx.font = 'bold 55px sans-serif'; ctx.fillText("CONTRATO REVOCADO", WIDTH/2, HEIGHT/2 - 40);
+                ctx.fillStyle = 'white'; ctx.font = '20px sans-serif';
+                ctx.fillText(timeLeft <= 0 ? "Falla crítica en los tiempos de entrega." : "Pérdida total del buque carguero.", WIDTH/2, HEIGHT/2 + 10);
+                drawButton("SOLICITAR NUEVO FLETE (Enter)", WIDTH/2, HEIGHT/2 + 100);
+            } 
+            else if (gameState === STATES.VICTORY) {
+                ctx.fillStyle = '#22c55e'; ctx.font = 'bold 55px sans-serif'; ctx.fillText("CONTRATO CUMPLIDO", WIDTH/2, HEIGHT/2 - 40);
+                ctx.fillStyle = 'white'; ctx.font = '20px sans-serif';
+                ctx.fillText("Operación de Comercio Exterior certificada con éxito.", WIDTH/2, HEIGHT/2 + 10);
+                drawButton("SIGUIENTE RUTA COMERCIAL (Enter)", WIDTH/2, HEIGHT/2 + 100);
+            }
+        }
+
+        function drawButton(text, x, y) {
+            ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; 
+            ctx.strokeRect(x - 220, y - 30, 440, 60);
+            ctx.fillStyle = 'white'; ctx.font = 'bold 16px sans-serif'; ctx.fillText(text, x, y + 6);
+        }
+
+        // --- Manejo de Inputs y Menús ---
+
+        window.addEventListener('mousedown', e => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // Lógica de clics en menús
+            if (gameState === STATES.MENU) {
+                if (mouseX > WIDTH/2 - 220 && mouseX < WIDTH/2 + 220 && mouseY > HEIGHT/2 + 120 && mouseY < HEIGHT/2 + 210) initGame();
+            } 
+            else if (gameState === STATES.PAUSED) {
+                // Continuar
+                if (mouseX > WIDTH/2 - 220 && mouseX < WIDTH/2 + 220 && mouseY > HEIGHT/2 - 60 && mouseY < HEIGHT/2) gameState = STATES.PLAYING;
+                // Repetir
+                if (mouseX > WIDTH/2 - 220 && mouseX < WIDTH/2 + 220 && mouseY > HEIGHT/2 + 20 && mouseY < HEIGHT/2 + 80) initGame();
+                // Abandonar
+                if (mouseX > WIDTH/2 - 220 && mouseX < WIDTH/2 + 220 && mouseY > HEIGHT/2 + 100 && mouseY < HEIGHT/2 + 160) gameState = STATES.MENU;
+            }
+            else if (gameState === STATES.GAMEOVER || gameState === STATES.VICTORY) {
+                if (mouseX > WIDTH/2 - 220 && mouseX < WIDTH/2 + 220 && mouseY > HEIGHT/2 + 70 && mouseY < HEIGHT/2 + 160) initGame();
+            }
+        });
+
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            
+            if (e.code === 'KeyP' || e.code === 'Escape') {
+                if (gameState === STATES.PLAYING) gameState = STATES.PAUSED;
+                else if (gameState === STATES.PAUSED) {
+                    if (e.code === 'KeyP') gameState = STATES.PLAYING;
+                    if (e.code === 'Escape') gameState = STATES.MENU;
+                }
+            }
+
+            if (gameState === STATES.PAUSED) {
+                if (e.code === 'KeyR') initGame();
+            }
+
+            if (e.code === 'Enter') {
+                if (gameState === STATES.MENU || gameState === STATES.GAMEOVER || gameState === STATES.VICTORY) initGame();
+            }
+        });
+
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+        gameLoop();
+    </script>
+</body>
+</html>
